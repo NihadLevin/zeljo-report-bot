@@ -1,0 +1,43 @@
+name: Zeljo match report
+
+on:
+  schedule:
+    - cron: "17 */2 * * *"   # every 2 hours (UTC)
+  workflow_dispatch:
+    inputs:
+      match_url:
+        description: "Optional: one match URL to post now"
+        required: false
+
+permissions:
+  contents: write   # needed to commit posted_matches.json
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+
+      - name: Post single match
+        if: ${{ github.event.inputs.match_url != '' && github.event.inputs.match_url != null }}
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python match_report.py "${{ github.event.inputs.match_url }}"
+
+      - name: Check for new matches
+        if: ${{ github.event.inputs.match_url == '' || github.event.inputs.match_url == null }}
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: python match_report.py --auto
+
+      - name: Save state
+        run: |
+          git config user.name "zeljo-bot"
+          git config user.email "zeljo-bot@users.noreply.github.com"
+          for f in posted_matches.json player_stats.json; do [ -f "$f" ] && git add "$f"; done
+          git diff --cached --quiet || git commit -m "Update posted matches and player stats"
+          git push
