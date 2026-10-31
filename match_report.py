@@ -56,10 +56,18 @@ ICON_RULES = [
 ]
 
 
-def fetch(url):
-    r = requests.get(url, headers=HEADERS, timeout=30)
-    r.raise_for_status()
-    return r.text
+def fetch(url, tries=3):
+    """GET with retries; the site is sometimes slow or briefly returns errors."""
+    for attempt in range(1, tries + 1):
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=30)
+            r.raise_for_status()
+            return r.text
+        except requests.RequestException as e:
+            if attempt == tries:
+                raise
+            print(f"retry {attempt}/{tries - 1} for {url}: {e}")
+            time.sleep(5 * attempt)
 
 
 def icon_signature(tag):
@@ -484,10 +492,15 @@ def fetch_match(urls):
     for url in urls:
         try:
             match = parse_match(fetch(url))
-        except (requests.RequestException, ValueError):
+        except requests.RequestException as e:
+            print(f"SKIP {url}: page error ({e})")
+            continue
+        except ValueError as e:
+            print(f"SKIP {url}: {e}")
             continue
         if match["teams"]:
             return url, match
+        print(f"SKIP {url}: no lineups on page")
     return None
 
 
@@ -588,8 +601,19 @@ def main():
         return
     embed = build_embed(match, urls[0])
     print(embed_to_text(embed))
-    if "--dry-run" not in args:
-        post_discord(embed)
+    if "--dry-run" in args:
+        return
+    post_discord(embed)
+    # A manually posted match counts like an automatic one: remember it,
+    # add it to the stats and post that competition's stats table
+    mid = re.search(r"/stats/match/(\d+)", urls[0]) or re.search(r"id=(\d+)", urls[0])
+    if mid and OUR_TEAM in (match["home"] + match["away"]).upper():
+        posted = load_state()
+        posted.add(mid.group(1))
+        save_state(posted)
+        player_stats.record_match(mid.group(1), match, OUR_TEAM)
+        time.sleep(3)
+        post_stats(player_stats.competition_of(match))
 
 
 if __name__ == "__main__":
