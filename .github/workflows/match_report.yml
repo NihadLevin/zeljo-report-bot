@@ -8,9 +8,17 @@ on:
       match_url:
         description: "Optional: one match URL to post now"
         required: false
+      rebuild_stats:
+        description: "Re-read all posted matches and recompute player stats"
+        type: boolean
+        default: false
+      post_stats:
+        description: "Post the stats table after rebuilding"
+        type: boolean
+        default: true
 
 permissions:
-  contents: write   # needed to commit posted_matches.json
+  contents: write   # needed to commit posted_matches.json / player_stats.json
 
 jobs:
   report:
@@ -22,14 +30,25 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt
 
+      - name: Rebuild player stats
+        if: ${{ github.event.inputs.rebuild_stats == 'true' }}
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          if [ "${{ github.event.inputs.post_stats }}" = "true" ]; then
+            python match_report.py --rebuild-stats
+          else
+            python match_report.py --rebuild-stats --dry-run
+          fi
+
       - name: Post single match
-        if: ${{ github.event.inputs.match_url != '' && github.event.inputs.match_url != null }}
+        if: ${{ github.event.inputs.rebuild_stats != 'true' && github.event.inputs.match_url != '' && github.event.inputs.match_url != null }}
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python match_report.py "${{ github.event.inputs.match_url }}"
 
       - name: Check for new matches
-        if: ${{ github.event.inputs.match_url == '' || github.event.inputs.match_url == null }}
+        if: ${{ github.event.inputs.rebuild_stats != 'true' && (github.event.inputs.match_url == '' || github.event.inputs.match_url == null) }}
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: python match_report.py --auto
