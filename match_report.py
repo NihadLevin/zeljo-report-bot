@@ -107,8 +107,13 @@ def is_icon(tag):
 def parse_player_cell(cell):
     """Return (name, flags, events[(kind, minute, signature)])."""
     link = cell.find("a")
-    name = link.get_text(" ", strip=True) if link else cell.get_text(" ", strip=True)
     full = cell.get_text(" ", strip=True)
+    if link and link.get_text(strip=True):
+        name = link.get_text(" ", strip=True)
+    else:
+        # Plain-text name: the cell text without minutes and (GK)/(C)
+        name = re.sub(r"\((GK|C)\)", "", MINUTE_RE.sub("", full))
+        name = re.sub(r"\s+", " ", name).strip(" ,")
     flags = re.findall(r"\((GK|C)\)", full)
 
     # Every minute text ("74'") is one event. Its type comes from, in order:
@@ -171,18 +176,21 @@ def attach_trailing_icons(cell, link, events):
     return out if out else events
 
 
-def parse_team_table(table):
-    team = table.find("strong") or table.find("b")
-    team_name = team.get_text(strip=True) if team else "?"
+def parse_team_table(table, team_name):
+    """Players of one lineup table. A player row starts with a shirt number."""
     players = []
     bench = False
     for tr in table.find_all("tr"):
         cells = tr.find_all(["td", "th"])
         text = tr.get_text(" ", strip=True)
-        if "Izmjene" in text and not tr.find("a", href=re.compile("/stats/player/")):
+        if not cells:
+            continue
+        if "Izmjene" in text and not re.fullmatch(r"\d{1,3}", cells[0].get_text(strip=True)):
             bench = True
             continue
-        if not tr.find("a", href=re.compile("/stats/player/")) or len(cells) < 2:
+        if len(cells) < 2 or not re.fullmatch(r"\d{1,3}", cells[0].get_text(strip=True)):
+            continue
+        if not cells[1].get_text(strip=True):
             continue
         number = cells[0].get_text(strip=True)
         name, flags, events = parse_player_cell(cells[1])
@@ -226,11 +234,16 @@ def parse_match(html):
             info["competition"] = h.get_text(strip=True)
             break
 
-    # Team tables: tables that contain player links and a team logo header.
+    # Lineup tables: the first row holds the team name (and its big crest).
+    # Player links are not required, the site sometimes leaves them out.
     teams = []
     for table in soup.find_all("table"):
-        if table.find("a", href=re.compile("/stats/player/")):
-            teams.append(parse_team_table(table))
+        first = table.find("tr")
+        head = first.get_text(" ", strip=True).upper() if first else ""
+        for team in (home, away):
+            if head == team.upper() or (team.upper() in head and table.find("img", src=re.compile("tim_big"))):
+                teams.append(parse_team_table(table, team))
+                break
     low = page_text.lower()
     info["extra_time"] = "produž" in low or "produz" in low
     info["penalties"] = after_score or None
@@ -627,7 +640,9 @@ def main():
         soup = BeautifulSoup(html, "html.parser")
         shown = 0
         for td in soup.find_all("td"):
-            if td.find("a", href=re.compile("/stats/player/")) and MINUTE_RE.search(td.get_text()):
+            prev = td.find_previous_sibling("td")
+            if (prev and re.fullmatch(r"\d{1,3}", prev.get_text(strip=True))
+                    and MINUTE_RE.search(td.get_text())):
                 print(str(td.find_parent("tr") or td), "\n")
                 shown += 1
                 if shown >= 6:
