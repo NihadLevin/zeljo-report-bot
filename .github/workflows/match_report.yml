@@ -1,8 +1,8 @@
 name: Zeljo match report
 
 on:
-  schedule:
-    - cron: "17 */2 * * *"   # every 2 hours (UTC)
+  # No GitHub schedule: an external cron service starts this once a day
+  # through the GitHub API (workflow_dispatch), or run it by hand in Actions.
   workflow_dispatch:
     inputs:
       match_url:
