@@ -9,6 +9,7 @@ Usage:
   python match_report.py <match_url>            # print + post one match
   python match_report.py <match_url> --dry-run  # print only, no Discord post
   python match_report.py <match_url> --debug    # show raw icon signatures
+  python match_report.py <match_url> --html     # show raw HTML of player cells
   python match_report.py --auto                 # find new Zeljo matches and post them
   python match_report.py --stats                # post season player stats now
   python match_report.py --rebuild-stats        # recompute stats from all posted matches
@@ -102,21 +103,64 @@ def parse_player_cell(cell):
     full = cell.get_text(" ", strip=True)
     flags = re.findall(r"\((GK|C)\)", full)
 
+    # Every minute text ("74'") is one event. Its type comes from, in order:
+    #  1. an icon element right before it (<img>, empty <span class=..>)
+    #  2. the element(s) wrapping the minute (<span class="goal">74'</span>)
+    #  3. an icon element right after it ("74' <img ...>")
     events = []
-    pending = None  # icon waiting for its minute
+    pending = None  # icon seen before the minute
     for node in cell.descendants:
         if isinstance(node, Tag) and is_icon(node):
-            if pending:  # icon without minute
-                events.append((classify(pending), None, pending))
             pending = icon_signature(node)
-        elif isinstance(node, NavigableString) and pending:
-            m = MINUTE_RE.search(str(node))
-            if m:
-                events.append((classify(pending), m.group(1).replace(" ", ""), pending))
+        elif isinstance(node, NavigableString):
+            if link and node.find_parent("a") is link:
+                continue  # player name
+            for m in MINUTE_RE.finditer(str(node)):
+                minute = m.group(1).replace(" ", "")
+                sig = pending or wrapper_signature(node, cell)
                 pending = None
-    if pending:
-        events.append((classify(pending), None, pending))
-    return name, flags, events
+                events.append([classify(sig) if sig else "unknown", minute, sig, None])
+    # case 3: minutes with no info, followed by a trailing icon
+    events = attach_trailing_icons(cell, link, events)
+    return name, flags, [tuple(e[:3]) for e in events]
+
+
+def wrapper_signature(text_node, cell):
+    """Signature of the elements wrapping a minute text, up to the table cell."""
+    parts = []
+    el = text_node.parent
+    while el is not None and el is not cell:
+        sig = icon_signature(el)
+        if sig:
+            parts.append(sig)
+        el = el.parent
+    return " ".join(parts)
+
+
+def attach_trailing_icons(cell, link, events):
+    """If minutes carry no type at all, try icons that come right after them."""
+    if not any(e[0] == "unknown" and not e[2] for e in events):
+        return events
+    seq = []  # ordered list of ("min", value) and ("icon", signature)
+    for node in cell.descendants:
+        if isinstance(node, Tag) and is_icon(node):
+            seq.append(("icon", icon_signature(node)))
+        elif isinstance(node, NavigableString) and not (link and node.find_parent("a") is link):
+            for m in MINUTE_RE.finditer(str(node)):
+                seq.append(("min", m.group(1).replace(" ", "")))
+    # pair each minute with the icon that directly follows it
+    i, out = 0, []
+    while i < len(seq):
+        kind, val = seq[i]
+        if kind == "min":
+            nxt = seq[i + 1] if i + 1 < len(seq) else None
+            if nxt and nxt[0] == "icon":
+                out.append([classify(nxt[1]), val, nxt[1], None])
+                i += 2
+                continue
+            out.append(["unknown", val, "", None])
+        i += 1
+    return out if out else events
 
 
 def parse_team_table(table):
@@ -519,7 +563,18 @@ def main():
     if not urls:
         print(__doc__)
         sys.exit(1)
-    match = parse_match(fetch(urls[0]))
+    html = fetch(urls[0])
+    if "--html" in args:  # raw HTML of player cells that have minutes
+        soup = BeautifulSoup(html, "html.parser")
+        shown = 0
+        for td in soup.find_all("td"):
+            if td.find("a", href=re.compile("/stats/player/")) and MINUTE_RE.search(td.get_text()):
+                print(str(td.find_parent("tr") or td), "\n")
+                shown += 1
+                if shown >= 6:
+                    break
+        return
+    match = parse_match(html)
     if "--debug" in args:
         debug_dump(match)
         return
