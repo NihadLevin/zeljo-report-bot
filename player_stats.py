@@ -87,29 +87,37 @@ def save_stats(data):
         json.dump(data, f, ensure_ascii=False, indent=1)
 
 
+COMPETITIONS = {"liga": "WWIN liga BiH", "kup": "Kup BiH"}
+
+
+def competition_of(match):
+    """'kup' for Kup BiH matches, otherwise 'liga'."""
+    return "kup" if "kup" in (match["info"]["competition"] or "").lower() else "liga"
+
+
 def record_match(mid, match, our_team):
     """Store (or overwrite) one match's player numbers."""
     data = load_stats()
     data[mid] = {
         "date": match["info"]["date"],
         "title": f"{match['home']} - {match['away']} {match['ft'][0]}:{match['ft'][1]}",
-        "competition": "kup" if "kup" in (match["info"]["competition"] or "").lower() else "liga",
+        "competition": competition_of(match),
         "players": match_player_stats(match, our_team),
     }
     save_stats(data)
 
 
-def season_totals():
-    """Sum every stored match per player."""
-    data = load_stats()
+def season_totals(competition):
+    """Sum stored matches of one competition ('liga' or 'kup') per player."""
+    data = {k: m for k, m in load_stats().items()
+            if m.get("competition", "liga") == competition}
     totals = {}
     for m in data.values():
         for name, s in m["players"].items():
             t = totals.setdefault(name, {k: 0 for k in s})
             for k, v in s.items():
                 t[k] = t.get(k, 0) + v
-    cup = sum(1 for m in data.values() if m.get("competition") == "kup")
-    return totals, len(data), cup
+    return totals, len(data)
 
 
 def short_name(full, all_names):
@@ -124,8 +132,8 @@ def utakmica(n):
     return f"{n} utakmica"
 
 
-def build_stats_embed(team_label="Željezničar"):
-    totals, n_matches, n_cup = season_totals()
+def build_stats_embed(competition="liga", team_label="Željezničar"):
+    totals, n_matches = season_totals(competition)
     if not totals:
         return None
     names = list(totals)
@@ -170,12 +178,10 @@ def build_stats_embed(team_label="Željezničar"):
         fields.append({"name": "Ostalo", "value": "\n".join(extra), "inline": False})
 
     return {
-        "title": f"📊 Statistika igrača – {team_label}",
+        "title": f"📊 Statistika igrača – {team_label} · {COMPETITIONS[competition]}",
         "description": description,
-        "color": 0x185FA5,
+        "color": 0x185FA5 if competition == "liga" else 0xBA7517,
         "fields": fields,
-        "footer": {"text": f"Nakon {utakmica(n_matches)}"
-                           + (f" ({n_matches - n_cup} liga, {n_cup} kup)" if n_cup else "")
-                           + " · N nastupi · S u startu · "
-                           f"Min minute · G golovi · ŽK žuti · CK crveni"},
+        "footer": {"text": f"{COMPETITIONS[competition]} · nakon {utakmica(n_matches)} · "
+                           "N nastupi · S u startu · Min minute · G golovi · ŽK žuti · CK crveni"},
     }
