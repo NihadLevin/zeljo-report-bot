@@ -275,10 +275,12 @@ def short_names(players):
             for p, f in zip(players, first)}
 
 
-def team_block(team_name, players, events):
+def team_block(team_name, players, events, all_players=None):
     """Text for one team: goals, cards, substitutions."""
-    nm = short_names(players)
-    ev = [e for e in events if e["team"] == team_name]
+    nm = short_names(all_players or players)
+    # Own goals count for the other side, so show them in the opponent's column
+    ev = [e for e in events
+          if (e["team"] == team_name) != (e["kind"] == "own_goal")]
     lines = []
 
     for e in ev:
@@ -351,7 +353,8 @@ def build_embed(match, url):
 
     fields = []
     for team_name, players in match["teams"]:
-        fields.append({"name": short(team_name), "value": team_block(team_name, players, ev)[:1024],
+        fields.append({"name": short(team_name), "value": team_block(team_name, players, ev,
+                       [p for _, ps in match["teams"] for p in ps])[:1024],
                        "inline": True})
 
     # Lineups in a second row of columns; a full-width field forces the new row
