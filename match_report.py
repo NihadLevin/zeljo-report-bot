@@ -272,8 +272,22 @@ def group_subs(events):
     return [(m, t, g["in"], g["out"]) for (m, t), g in groups.items()]
 
 
+CLUB_PREFIXES = ("FK", "NK", "HŠK", "HNK", "OFK", "NŠK")
+ACRONYMS = {"BSK", "GOŠK", "TOŠK", "SAŠK", "OFK"}  # club names written in capitals
+
+
 def short(team):
-    return team.replace("FK ", "").replace("NK ", "").replace("HŠK ", "").title()
+    """'FK ŽELJEZNIČAR' -> 'Željezničar', 'BSK' -> 'BSK', 'NK TOŠK TEŠANJ' -> 'TOŠK Tešanj'."""
+    words = team.split()
+    if len(words) > 1 and words[0].upper() in CLUB_PREFIXES:
+        words = words[1:]
+
+    def fix(w):
+        if w.upper() in ACRONYMS:
+            return w.upper()
+        return "-".join(p.capitalize() for p in w.split("-"))
+
+    return " ".join(fix(w) for w in words)
 
 
 def short_names(players):
@@ -467,10 +481,14 @@ def match_datetime(match):
 def find_candidates():
     """(match_id, [urls to try]) for league and cup matches involving Zeljo."""
     out = {}
-    # League: team page links straight to /stats/match/<id>/
+    # League: team page links look like /stats/match/<id>-<home>-<away>/.
+    # The page also lists other clubs' matches of the round, skip those by slug.
     try:
-        for mid in re.findall(r"/stats/match/(\d+)", fetch(TEAM_PAGE)):
-            out.setdefault(mid, [f"{BASE}/stats/match/{mid}/"])
+        for mid, slug in re.findall(r"/stats/match/(\d+)(?:-([\w-]+))?/", fetch(TEAM_PAGE)):
+            if slug and "zeljeznicar" not in slug:
+                continue
+            urls = [f"{BASE}/stats/match/{mid}-{slug}/"] if slug else []
+            out.setdefault(mid, urls + [f"{BASE}/stats/match/{mid}/"])
     except requests.RequestException as e:
         print("league page failed:", e)
     # Cup: links look like kup-bih?view=match&id=<id>%3A<slug>
@@ -479,6 +497,7 @@ def find_candidates():
         for mid, slug in re.findall(r"view=match(?:&amp;|&)id=(\d+)(?:%3A|:)([\w-]+)", html):
             if "zeljeznicar" in slug:
                 out.setdefault(mid, [
+                    f"{BASE}/stats/match/{mid}-{slug}/",
                     f"{BASE}/stats/match/{mid}/",
                     f"{BASE}/takmicenja/nogomet-muskarci/kup-bih?view=match&id={mid}%3A{slug}",
                 ])
@@ -487,20 +506,36 @@ def find_candidates():
     return list(out.items())
 
 
+def page_diag(html):
+    """Short description of a page, to see in the log why lineups are missing."""
+    return (f"{len(html)} bytes, {html.count('<table')} tables, "
+            f"{html.count('/stats/player/')} player links")
+
+
 def fetch_match(urls):
-    """Try each URL until one parses as a played match page with lineups."""
+    """Return ("played", url, match), ("upcoming", url, match) or None.
+
+    The site sometimes returns a page with the score but without lineups,
+    so a played page without lineups is fetched again before giving up.
+    """
     for url in urls:
-        try:
-            match = parse_match(fetch(url))
-        except requests.RequestException as e:
-            print(f"SKIP {url}: page error ({e})")
-            continue
-        except ValueError as e:
-            print(f"SKIP {url}: {e}")
-            continue
-        if match["teams"]:
-            return url, match
-        print(f"SKIP {url}: no lineups on page")
+        for attempt in (1, 2):
+            try:
+                html = fetch(url)
+                match = parse_match(html)
+            except requests.RequestException as e:
+                print(f"SKIP {url}: page error ({e})")
+                break
+            except ValueError as e:
+                print(f"SKIP {url}: {e}")
+                break
+            if (match["info"]["status"] or "").strip().lower() != "odigrana":
+                return ("upcoming", url, match)  # not played yet, nothing to log
+            if match["teams"]:
+                return ("played", url, match)
+            print(f"no lineups on {url} (attempt {attempt}): {page_diag(html)}")
+            if attempt == 1:
+                time.sleep(15)
     return None
 
 
@@ -516,13 +551,14 @@ def run_auto():
         if mid in posted:
             continue
         found = fetch_match(urls)
+        time.sleep(2)  # be gentle with the site between match pages
         if not found:
-            continue  # not played yet, or page not readable
-        url, match = found
-        if OUR_TEAM not in (match["home"] + match["away"]).upper():
+            print(f"SKIP match {mid}: page not readable now, will retry next run")
             continue
-        # Only finished matches ("Odigrana"); upcoming pages already show 0:0
-        if (match["info"]["status"] or "").strip().lower() != "odigrana":
+        state, url, match = found
+        if state != "played":
+            continue  # upcoming match
+        if OUR_TEAM not in (match["home"] + match["away"]).upper():
             continue
         new_matches.append((match_datetime(match), mid, url, match))
 
@@ -559,12 +595,14 @@ def post_stats(competition=None):
 def rebuild_stats():
     """Re-read every posted match and recompute stats (e.g. after an icon fix)."""
     for mid in sorted(load_state()):
-        url = f"{BASE}/stats/match/{mid}/"
-        try:
-            player_stats.record_match(mid, parse_match(fetch(url)), OUR_TEAM)
-            print("ok", url)
-        except Exception as e:  # keep going on one bad page
-            print("skip", url, e)
+        found = fetch_match([f"{BASE}/stats/match/{mid}/"])
+        time.sleep(2)
+        if found and found[0] == "played":
+            player_stats.record_match(mid, found[2], OUR_TEAM)
+            print("ok", found[1])
+        else:
+            # Keep the stats we already have for this match rather than wiping them
+            print(f"skip {mid}: page not readable now, old stats kept")
 
 
 def main():
@@ -596,6 +634,13 @@ def main():
                     break
         return
     match = parse_match(html)
+    if not match["teams"] and "--debug" not in args:
+        # The site sometimes leaves the lineups out; try once more
+        found = fetch_match([urls[0]])
+        if not found or not found[2]["teams"]:
+            print(f"No lineups on {urls[0]} ({page_diag(html)}). Try again later.")
+            sys.exit(1)
+        match = found[2]
     if "--debug" in args:
         debug_dump(match)
         return
