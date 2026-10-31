@@ -523,19 +523,24 @@ def run_auto():
         posted.add(mid)
         save_state(posted)
         time.sleep(3)  # stay under Discord webhook rate limit
-        # Season stats right after each report; matches go oldest first,
+        # Stats of this match's competition right after its report (league
+        # after league games, cup after cup games); matches go oldest first,
         # so each table shows totals up to and including this match
-        post_stats()
+        post_stats(player_stats.competition_of(match))
         time.sleep(3)
     save_state(posted)
 
 
-def post_stats():
-    embed = player_stats.build_stats_embed()
-    if embed:
+def post_stats(competition=None):
+    """Post the stats table of one competition, or of both when None."""
+    for comp in ([competition] if competition else ["liga", "kup"]):
+        embed = player_stats.build_stats_embed(comp)
+        if not embed:
+            continue  # no matches in this competition yet
         print(embed_to_text({"title": embed["title"], "description": embed["description"],
                              "fields": embed["fields"], "footer": embed["footer"], "url": ""}))
         post_discord(embed)
+        time.sleep(2)
 
 
 def rebuild_stats():
@@ -559,7 +564,7 @@ def main():
         if "--dry-run" not in args:
             post_stats()
         return
-    if "--stats" in args:  # post current season stats now
+    if "--stats" in args:  # post current league and cup stats now
         post_stats()
         return
     urls = [a for a in args if a.startswith("http")]
